@@ -7,7 +7,8 @@ int main( int argc, char** argv )
 {
 	// global variables
 	Mat img_src, img_keypoints;
-
+	vector<KeyPoint> keypoints;
+			
 	//initialise values
 	int minThresh_slider = 0, maxThresh_slider = 96, blobColor_slider = 0, minArea_slider = 1000, maxArea_slider = 8000, minDistBetweenBlobs_slider = 10, minRepeatability_slider = 1, i_minCircularity_slider = 200, i_maxCircularity_slider = 1000, i_minConvexity_slider = 650, i_maxConvexity_slider = 1000, i_minInertiaRatio_slider = 100, i_maxInertiaRatio_slider = 1000;
 	
@@ -76,7 +77,6 @@ int main( int argc, char** argv )
 		
 		// detect blobs
 		SimpleBlobDetector detector(params);
-		std::vector<KeyPoint> keypoints;
 		detector.detect( img_src, keypoints);
 
 		// draw detected blobs as red circles
@@ -84,6 +84,13 @@ int main( int argc, char** argv )
 		
 		imshow( "output", img_keypoints );
 	}
+	
+	///output
+	//results headers
+	cout << "filename" <<"\t"<< "elytron_id" <<"\t"<< "n_spots" <<"\t"<< "spot_area" <<"\t"<< "elytron_area" << endl;
+	
+	//results
+	cout << argv[1] <<"\t"<< "TODO" <<"\t"<< keypoints.size() <<"\t"<< "TODO" <<"\t"<< "TODO" << endl;
 	
 	//write image mask
 	cv::imwrite("mask.jpg", img_keypoints);
