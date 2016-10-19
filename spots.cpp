@@ -1,13 +1,23 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string>
+#include <fstream>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <highgui.h>
-#include <string>
-// #include <boost/filesystem.hpp>
 
 using namespace cv;
 using namespace std;
 
-//function to count number of pixels in mask below user-defined brightness threshold
+/*
+// THRESHOLDING DEFAULTS
+// GaussianBlur block_size = 99
+// adaptiveThreshold block_size = 99
+// adaptiveThreshold constant = 6
+*/
+
+//function counts number of pixels below the absolute threshold in a masked image
 int countDark(Mat input, Mat mask, int threshold){
 	int nPixels = 0;
 	for(int x = 0; x<input.cols; x++){
@@ -19,21 +29,71 @@ int countDark(Mat input, Mat mask, int threshold){
         }
 	return nPixels;
 }
-  
-///MAIN
+
+//global argument storage
+struct opts_t {
+    int inpaint_flag;           // optional -i flag
+	int n_elytra;				// mandatory -e parameter
+    char **inputFiles;          // input files
+    int numInputFiles;          // # of input files
+} opts;
+static const char *optString = "ie:h?";
+
+
+//main function
 int main( int argc, char** argv ) {
 	
-	//error handling
-	if (argc<3) {
-		std::cout << "Error!\nUsage is: " <<argv[0]<< " n_elytra file_1 file_2..." << std::endl;
-		return 0;
+	///OPTION AND ERROR HANDLING
+	//if no options supplied
+	if(argc<2) {
+		fprintf(stderr, "\nError: no options supplied\n\n");
+		return(0);
 	}
 	
-	//print results header
-		cout << "filename" <<"\t"<< "elytron_id" <<"\t"<< "n_spots" <<"\t"<< "spot_px" <<"\t"<< "elytron_px" <<"\t"<< "elytron_H" <<"\t"<< "elytron_W" << endl;
+    //initialize opts
+    int opt = 0;
+    opts.inpaint_flag = 0;
+    opts.n_elytra;
+    opts.inputFiles = NULL;
+    opts.numInputFiles = 0;
 	
-	//FILELOOP
-	for(int i=2; i<argc; i++){
+	opt = getopt( argc, argv, optString );
+    while( opt != -1 ) {
+		switch( opt ) {
+            case 'i':
+                opts.inpaint_flag = 1;
+                break;
+            case 'e':
+                opts.n_elytra = atoi(optarg);
+                break;
+            case 'h':
+			case '?':
+				fprintf(stderr, "\nUSAGE:\n\t%s [-i] -e N file1.jpg file2.jpg ...\n\nOPTIONS:\n\t-i\timplements impainting (interpolation of occluding glare)\n\t-e N\tnumber of elytra to find in images (required)\n\n",
+                    argv[0]);
+				return(0);
+			default:
+                break;
+        }
+        opt = getopt( argc, argv, optString );
+    }
+    
+    opts.inputFiles = argv + optind;
+    opts.numInputFiles = argc - optind;
+	
+	//if no image files supplied
+	if(opts.numInputFiles<1) {
+		fprintf(stderr, "\nError: expected image file(s) after options\n\n");
+		return(0);
+	}
+	
+	
+	///IMAGE PROCESSING
+	//print results header
+	std::ofstream fout("results.txt");
+	fout << "filename" <<"\t"<< "elytron_id" <<"\t"<< "n_spots" <<"\t"<< "spot_px" <<"\t"<< "elytron_px" <<"\t"<< "elytron_H" <<"\t"<< "elytron_W" << endl;
+	
+	//file loop
+	for(int i=optind; i<argc; i++){
 		
 		//STORAGE
 		Mat img_src, img_grey, img_hsv, img_blur, img_thresh, img_keypoints, img_spots;
@@ -45,15 +105,19 @@ int main( int argc, char** argv ) {
 		cvtColor(img_src, img_grey, CV_BGR2GRAY);
 		Mat img_bgr[3];
 		split(img_src, img_bgr);
-			
+		
+		//get filename
+		string FileName = argv[i];
+		FileName.erase(FileName.find(".jpg"));
+		
 		///FIND ALL ELYTRA
 		//PROCESS IMAGE
-		GaussianBlur(img_bgr[0], img_blur, Size(99,99), 0);
+		GaussianBlur(img_bgr[0], img_blur, Size(15,15), 0);
 // 		blur(img_grey, img_blur, Size(9,9));
-		adaptiveThreshold(img_blur, img_thresh, 255, CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY_INV, 99, 6);
+		adaptiveThreshold(img_blur, img_thresh, 255, CV_ADAPTIVE_THRESH_GAUSSIAN_C, CV_THRESH_BINARY_INV, 99, 5);
 		//dilate and erode
-// 		dilate(img_thresh, img_thresh, Mat(Size(15,15), CV_8U, Scalar(255)));
-// 		erode(img_thresh, img_thresh, Mat(Size(15,15), CV_8U, Scalar(255)));
+		dilate(img_thresh, img_thresh, Mat(Size(9,9), CV_8U, Scalar(255)));
+		erode(img_thresh, img_thresh, Mat(Size(9,9), CV_8U, Scalar(255)));
 
 		//FIND ELYTRA CONTOURS
 		findContours(img_thresh.clone(), contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
@@ -64,30 +128,54 @@ int main( int argc, char** argv ) {
 			return contours[lhs].size() > contours[rhs].size();
 		});
 		//set number of elytra to use
-		int n_elytra = strtol(argv[1], NULL, 10);
+		int n_elytra = opts.n_elytra;
 		n_elytra = min(n_elytra, int(contours.size()));
 
+		Mat img_output2(img_grey.size(), CV_8UC3, Scalar(0, 0, 0));
 		
 		///ELYTRA LOOP
 		for (int j = 0; j < n_elytra; ++j) {
 			
-			//draw elytron contour and mask original image
+// 			//create mask with white background
 			Mat img_contour(img_grey.size(), CV_8U, Scalar(0));
-			Mat img_mask(img_grey.size(), CV_8U, Scalar(255));
-// 			Mat img_src_mask(img_src.size(), CV_32F, Scalar(255));
-			
 			drawContours(img_contour, contours, contourIndices[j], Scalar(255), CV_FILLED);
-			img_bgr[2].copyTo(img_mask, img_contour);
-// 			img_src.copyTo(img_src_mask, img_contour);
 			
-			//find spot contours
+			///INTERPOLATE LIGHT REFLECTION
+			Mat img_mask(img_grey.size(), CV_8U, Scalar(255));
+			if(opts.inpaint_flag) {
+				Mat mask_red(img_grey.size(), CV_8U, Scalar(255));
+				img_bgr[2].copyTo(mask_red, img_contour);
+				Mat img_interpol;
+// 				//calculate absolute threshold from image histogram
+// 				Scalar mean, stddev;
+// 				meanStdDev(img_blur2, mean, stddev);
+// 				float maxHue = mean[0] + stddev[0]*6;
+// 				inRange(img_blur2, Scalar(maxHue), Scalar(255), img_thresh2);
+				//adaptive threshold bright pixels
+				adaptiveThreshold(mask_red, img_thresh, 255, CV_ADAPTIVE_THRESH_GAUSSIAN_C, CV_THRESH_BINARY_INV, 9, 6);
+				//dilate, erode and dilate again
+				dilate(img_thresh, img_thresh, Mat(Size(9,9), CV_8U, Scalar(255)));
+				erode(img_thresh, img_thresh, Mat(Size(25,25), CV_8U, Scalar(255)));
+				dilate(img_thresh, img_thresh, Mat(Size(25,25), CV_8U, Scalar(255)));
+				//inpaint
+				inpaint(mask_red, img_thresh, img_interpol, 5, 1);
+				//blur
+				medianBlur(img_interpol, img_interpol, 5);		
+				//create inpainted mask
+				img_interpol.copyTo(img_mask, img_contour);
+			}
+			else {
+				//create raw mask
+				img_bgr[2].copyTo(img_mask, img_contour);
+			}
+			
+			///FIND SPOTS
+			//threshold spot contours
 			Mat mask_blur, mask_thresh;
 			GaussianBlur(img_mask, mask_blur, Size(49,49), 0);
 			adaptiveThreshold(mask_blur, mask_thresh, 255, CV_ADAPTIVE_THRESH_GAUSSIAN_C, CV_THRESH_BINARY, 299, 25);
-// 			threshold(img_mask, mask_thresh, 0, 255, CV_THRESH_BINARY | CV_THRESH_OTSU);
-// 			adaptiveThreshold(img_mask, mask_thresh, 255, CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY, 11, 2);
 			
-			///COUNT SPOT PIXELS AND ELYTRON PIXELS
+			//count spot pixels and elytron pixels
 			int mask_pixels = cv::countNonZero(img_contour);
 			int spot_pixels = countDark(img_grey, img_contour, 80);
 			
@@ -116,9 +204,9 @@ int main( int argc, char** argv ) {
 			SimpleBlobDetector detector(params);
 			detector.detect( img_mask, keypoints);
 
-			///CREATE OUTPUT IMAGE
-			//draw elytron contour (in grey against white background)
+			///CREATE IMAGE MASK TO OUTPUT
 			Mat img_output(img_grey.size(), CV_8U, Scalar(0));
+			//draw elytron contour (in grey against white background)
 			drawContours(img_output, contours, contourIndices[j], Scalar(200), CV_FILLED);
 			bitwise_not(img_output, img_output);
 			//add spots in black
@@ -139,19 +227,30 @@ int main( int argc, char** argv ) {
 			});
 			//add text for elytron id
 			string elytron_id = to_string(j);
-			putText(img_output, elytron_id, extRight, FONT_HERSHEY_SIMPLEX, 8, Scalar(0,0,0), 40, 4);
-			//make image name
-			string FileName = argv[i];
-			FileName.erase(FileName.find(".jpg"));
-			std::ostringstream text;
-			text << FileName << "_mask" << j << ".jpg";
-			//write image
-			imwrite(text.str(), img_output);
+			putText(img_output, elytron_id, extRight, FONT_HERSHEY_SIMPLEX, 8, Scalar(0,0,255), 30, 3);
+			
+			//process overall image mask
+			bitwise_not(img_output, img_output);
+			bitwise_or(img_output, img_output2, img_output2);
+
+			//write elytron mask (for testing)
+// // 			Mat img_mask2;
+// // 			img_src.copyTo(img_mask2, img_contour);
+// 			ostringstream text;
+// 			text << FileName << "_mask" << j << ".jpg";
+// 			imwrite(text.str(), img_mask);
 			
 			///OUTPUT DATA
-			cout << FileName <<"\t"<< j <<"\t"<< keypoints.size() <<"\t"<< spot_pixels <<"\t"<< mask_pixels <<"\t"<< minRect.size.height <<"\t"<< minRect.size.width << endl;
-		
+			fout << FileName <<"\t"<< j <<"\t"<< keypoints.size() <<"\t"<< spot_pixels <<"\t"<< mask_pixels <<"\t"<< minRect.size.height <<"\t"<< minRect.size.width << endl;
 		}
+		
+		//write image mask
+		ostringstream text;
+		text << FileName << "_mask" << ".jpg";
+		bitwise_not(img_output2, img_output2);
+		imwrite(text.str(), img_output2);
 	}
+	
 	return 1;
+	
 }
